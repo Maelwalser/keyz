@@ -52,6 +52,8 @@ fn run_game(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result
                     match key_event.code {
                         KeyCode::Esc => match game.phase {
                             GamePhase::Playing => game.phase = GamePhase::Results,
+                            GamePhase::SongSelect => game.phase = GamePhase::DifficultySelect,
+                            GamePhase::Results => game.phase = GamePhase::SongSelect,
                             _ => return Ok(()),
                         },
                         KeyCode::Char('q') if game.phase != GamePhase::Playing => {

@@ -4,15 +4,27 @@ use std::time::Instant;
 
 // ── Lane Configuration ──────────────────────────────────────────────────────
 
-pub const NUM_LANES: usize = 5;
+pub const MAX_LANES: usize = 8;
 
-pub const LANE_COLORS: [(u8, u8, u8); NUM_LANES] = [
-    (255, 70, 100),  // Hot pink
-    (255, 180, 50),  // Orange
-    (120, 255, 100), // Green
-    (80, 170, 255),  // Blue
-    (200, 120, 255), // Purple
+/// Full 8-lane color palette (a s d f h j k l)
+pub const ALL_LANE_COLORS: [(u8, u8, u8); MAX_LANES] = [
+    (255, 70, 100),  // Hot pink  — a
+    (255, 180, 50),  // Orange    — s
+    (120, 255, 100), // Green     — d
+    (80, 170, 255),  // Blue      — f
+    (200, 120, 255), // Purple    — h
+    (255, 220, 80),  // Yellow    — j
+    (80, 220, 220),  // Cyan      — k
+    (255, 140, 50),  // Amber     — l
 ];
+
+const BEGINNER_KEYS: [char; 4] = ['h', 'j', 'k', 'l'];
+const STANDARD_KEYS: [char; 8] = ['a', 's', 'd', 'f', 'h', 'j', 'k', 'l'];
+
+/// Maps 5-lane chart indices to 8 Standard lanes (spread evenly across the board)
+const STANDARD_REMAP: [usize; 5] = [0, 2, 4, 5, 7];
+/// Maps 5-lane chart indices to 4 Beginner lanes
+const BEGINNER_REMAP: [usize; 5] = [0, 1, 2, 2, 3];
 
 // ── Timing Constants ────────────────────────────────────────────────────────
 
@@ -28,11 +40,50 @@ pub const WINDOW_MISS: f64 = 0.200;
 /// How long past the hit zone before a note counts as missed
 pub const MISS_CUTOFF: f64 = 0.200;
 
+// ── Difficulty ──────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Difficulty {
+    Beginner,
+    Standard,
+    Hardcore,
+}
+
+impl Difficulty {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Difficulty::Beginner => "Beginner",
+            Difficulty::Standard => "Standard",
+            Difficulty::Hardcore => "Hardcore",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Difficulty::Beginner => "4 lanes  ·  fixed keys: H J K L",
+            Difficulty::Standard => "8 lanes  ·  fixed keys: A S D F H J K L",
+            Difficulty::Hardcore => "5 lanes  ·  random key on every note",
+        }
+    }
+
+    pub fn color(&self) -> (u8, u8, u8) {
+        match self {
+            Difficulty::Beginner => (80, 220, 120),
+            Difficulty::Standard => (80, 170, 255),
+            Difficulty::Hardcore => (255, 80, 80),
+        }
+    }
+}
+
+pub const ALL_DIFFICULTIES: [Difficulty; 3] =
+    [Difficulty::Beginner, Difficulty::Standard, Difficulty::Hardcore];
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GamePhase {
     Title,
+    DifficultySelect,
     SongSelect,
     Playing,
     Results,
@@ -103,7 +154,7 @@ pub struct Song {
     pub name: String,
     pub artist: String,
     pub bpm: f64,
-    /// (beat_number, lane_index)
+    /// (beat_number, lane_index) — charts are always authored for 5 lanes (0–4)
     pub chart: Vec<(f64, usize)>,
     pub total_beats: f64,
 }
@@ -122,6 +173,9 @@ impl Song {
 
 pub struct Game {
     pub phase: GamePhase,
+    pub difficulty: Difficulty,
+    pub selected_difficulty: usize,
+
     pub songs: Vec<Song>,
     pub selected_song: usize,
 
@@ -143,7 +197,7 @@ pub struct Game {
 
     // Visual feedback
     pub last_hit: Option<(HitGrade, Instant)>,
-    pub lane_flash: [Option<Instant>; NUM_LANES],
+    pub lane_flash: [Option<Instant>; MAX_LANES],
 }
 
 impl Game {
@@ -151,6 +205,8 @@ impl Game {
         let songs = crate::songs::builtin_songs();
         Game {
             phase: GamePhase::Title,
+            difficulty: Difficulty::Standard,
+            selected_difficulty: 1, // default to Standard
             songs,
             selected_song: 0,
             notes: Vec::new(),
@@ -164,22 +220,63 @@ impl Game {
             total_notes: 0,
             hit_counts: [0; 4],
             last_hit: None,
-            lane_flash: [None; NUM_LANES],
+            lane_flash: [None; MAX_LANES],
         }
     }
+
+    // ── Difficulty helpers ────────────────────────────────────────────────
+
+    pub fn num_lanes(&self) -> usize {
+        match self.difficulty {
+            Difficulty::Beginner => 4,
+            Difficulty::Standard => 8,
+            Difficulty::Hardcore => 5,
+        }
+    }
+
+    pub fn lane_color(&self, lane: usize) -> (u8, u8, u8) {
+        match self.difficulty {
+            // Beginner uses hjkl → ALL_LANE_COLORS indices 4-7
+            Difficulty::Beginner => ALL_LANE_COLORS[lane + 4],
+            Difficulty::Standard => ALL_LANE_COLORS[lane],
+            Difficulty::Hardcore => ALL_LANE_COLORS[lane], // indices 0-4
+        }
+    }
+
+    /// Returns the key to display for a lane.
+    /// Fixed-key modes always return the lane key; Hardcore returns the next note's key.
+    pub fn display_key_for_lane(&self, lane: usize) -> char {
+        match self.difficulty {
+            Difficulty::Beginner => BEGINNER_KEYS[lane],
+            Difficulty::Standard => STANDARD_KEYS[lane],
+            Difficulty::Hardcore => self.next_key_for_lane(lane).unwrap_or('·'),
+        }
+    }
+
+    // ── Song / game lifecycle ─────────────────────────────────────────────
 
     pub fn start_song(&mut self) {
         let song = &self.songs[self.selected_song];
         let beat_dur = song.beat_duration();
 
-        // Build note list from chart, offset by APPROACH_TIME so first notes appear immediately
         let offset = APPROACH_TIME + 1.5; // extra 1.5s lead-in
         let mut rng = rand::thread_rng();
+
         self.notes = song
             .chart
             .iter()
-            .map(|&(beat, lane)| {
-                let key = (b'a' + rng.gen_range(0u8..26)) as char;
+            .map(|&(beat, chart_lane)| {
+                let src = chart_lane.min(4);
+                let lane = match self.difficulty {
+                    Difficulty::Beginner => BEGINNER_REMAP[src],
+                    Difficulty::Standard => STANDARD_REMAP[src],
+                    Difficulty::Hardcore => src,
+                };
+                let key = match self.difficulty {
+                    Difficulty::Beginner => BEGINNER_KEYS[lane],
+                    Difficulty::Standard => STANDARD_KEYS[lane],
+                    Difficulty::Hardcore => (b'a' + rng.gen_range(0u8..26)) as char,
+                };
                 Note {
                     lane,
                     key,
@@ -196,7 +293,7 @@ impl Game {
         self.max_combo = 0;
         self.hit_counts = [0; 4];
         self.last_hit = None;
-        self.lane_flash = [None; NUM_LANES];
+        self.lane_flash = [None; MAX_LANES];
         self.game_time = 0.0;
         self.countdown = Some(3.0);
         self.start_instant = Some(Instant::now());
@@ -252,9 +349,26 @@ impl Game {
         match self.phase {
             GamePhase::Title => {
                 if matches!(key, KeyCode::Enter | KeyCode::Char(' ')) {
-                    self.phase = GamePhase::SongSelect;
+                    self.phase = GamePhase::DifficultySelect;
                 }
             }
+            GamePhase::DifficultySelect => match key {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if self.selected_difficulty > 0 {
+                        self.selected_difficulty -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if self.selected_difficulty < ALL_DIFFICULTIES.len() - 1 {
+                        self.selected_difficulty += 1;
+                    }
+                }
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    self.difficulty = ALL_DIFFICULTIES[self.selected_difficulty];
+                    self.phase = GamePhase::SongSelect;
+                }
+                _ => {}
+            },
             GamePhase::SongSelect => match key {
                 KeyCode::Up | KeyCode::Char('k') => {
                     if self.selected_song > 0 {
@@ -275,7 +389,6 @@ impl Game {
                 if self.countdown.is_some() {
                     return;
                 }
-                // Any letter key press attempts to hit the matching note
                 if let KeyCode::Char(ch) = key {
                     self.try_hit(ch);
                 }
@@ -347,13 +460,14 @@ impl Game {
             }
 
             let multiplier = 1 + self.combo / 10;
-            self.score += grade.points() * multiplier;
+            self.score = self.score.saturating_add(grade.points().saturating_mul(multiplier));
             self.last_hit = Some((grade, Instant::now()));
         }
     }
 
     pub fn accuracy(&self) -> f64 {
-        let total_hit = self.hit_counts[0] + self.hit_counts[1] + self.hit_counts[2] + self.hit_counts[3];
+        let total_hit =
+            self.hit_counts[0] + self.hit_counts[1] + self.hit_counts[2] + self.hit_counts[3];
         if total_hit == 0 {
             return 100.0;
         }

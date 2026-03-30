@@ -34,6 +34,7 @@ pub fn render(frame: &mut Frame, game: &Game) {
     let area = frame.area();
     match game.phase {
         GamePhase::Title => render_title(frame.buffer_mut(), area),
+        GamePhase::DifficultySelect => render_difficulty_select(frame.buffer_mut(), area, game),
         GamePhase::SongSelect => render_song_select(frame.buffer_mut(), area, game),
         GamePhase::Playing => render_gameplay(frame.buffer_mut(), area, game),
         GamePhase::Results => render_results(frame.buffer_mut(), area, game),
@@ -111,11 +112,95 @@ fn render_title(buf: &mut Buffer, area: Rect) {
     );
 }
 
+// ── Difficulty Select ────────────────────────────────────────────────────────
+
+fn render_difficulty_select(buf: &mut Buffer, area: Rect, game: &Game) {
+    let cx = area.width / 2;
+    let start_y = area.height / 4;
+
+    let header = "─── SELECT DIFFICULTY ───";
+    draw_str(
+        buf,
+        cx.saturating_sub(header.len() as u16 / 2),
+        start_y,
+        header,
+        Style::default().fg(Color::Rgb(255, 200, 100)),
+    );
+
+    for (i, diff) in ALL_DIFFICULTIES.iter().enumerate() {
+        let y = start_y + 2 + i as u16 * 4;
+        if y + 2 >= area.height {
+            break;
+        }
+
+        let selected = i == game.selected_difficulty;
+        let arrow = if selected { "▸ " } else { "  " };
+        let (dr, dg, db) = diff.color();
+
+        let name_color = if selected {
+            Color::Rgb(dr, dg, db)
+        } else {
+            Color::Rgb(dr / 2, dg / 2, db / 2)
+        };
+        let desc_color = if selected {
+            Color::Rgb(180, 180, 200)
+        } else {
+            Color::Rgb(80, 80, 100)
+        };
+
+        let x = cx.saturating_sub(22);
+        let name_line = format!("{}{}", arrow, diff.label());
+        draw_str(buf, x, y, &name_line, Style::default().fg(name_color));
+        draw_str(
+            buf,
+            x + 2,
+            y + 1,
+            diff.description(),
+            Style::default().fg(desc_color),
+        );
+
+        if selected {
+            for col in x.saturating_sub(1)..=(x + 45).min(area.width - 1) {
+                if let Some(cell) = buf.cell_mut((col, y)) {
+                    cell.set_bg(Color::Rgb(20, 20, 35));
+                }
+                if let Some(cell) = buf.cell_mut((col, y + 1)) {
+                    cell.set_bg(Color::Rgb(20, 20, 35));
+                }
+            }
+        }
+    }
+
+    let hint = "↑/↓ Navigate   ENTER Select   Esc Back";
+    draw_str(
+        buf,
+        cx.saturating_sub(hint.len() as u16 / 2),
+        area.height.saturating_sub(2),
+        hint,
+        Style::default().fg(Color::Rgb(100, 100, 120)),
+    );
+}
+
 // ── Song Select ─────────────────────────────────────────────────────────────
 
 fn render_song_select(buf: &mut Buffer, area: Rect, game: &Game) {
     let cx = area.width / 2;
     let start_y = area.height / 4;
+
+    // Show selected difficulty at top
+    let (dr, dg, db) = game.difficulty.color();
+    let diff_label = format!(
+        "── {} ─ {} ──",
+        game.difficulty.label(),
+        game.difficulty.description()
+    );
+    draw_str(
+        buf,
+        cx.saturating_sub(diff_label.len() as u16 / 2),
+        start_y.saturating_sub(2),
+        &diff_label,
+        Style::default().fg(Color::Rgb(dr, dg, db)),
+    );
 
     let header = "─── SELECT SONG ───";
     draw_str(
@@ -158,7 +243,6 @@ fn render_song_select(buf: &mut Buffer, area: Rect, game: &Game) {
         draw_str(buf, x, y + 1, &detail_line, Style::default().fg(detail_color));
 
         if selected {
-            // Highlight bar
             for col in x.saturating_sub(1)..=(x + 55).min(area.width - 1) {
                 if let Some(cell) = buf.cell_mut((col, y)) {
                     cell.set_bg(Color::Rgb(30, 25, 45));
@@ -167,7 +251,7 @@ fn render_song_select(buf: &mut Buffer, area: Rect, game: &Game) {
         }
     }
 
-    let hint = "↑/↓ Navigate   ENTER Play   Q Quit";
+    let hint = "↑/↓ Navigate   ENTER Play   Esc Back   Q Quit";
     draw_str(
         buf,
         cx.saturating_sub(hint.len() as u16 / 2),
@@ -181,15 +265,21 @@ fn render_song_select(buf: &mut Buffer, area: Rect, game: &Game) {
 
 fn render_gameplay(buf: &mut Buffer, area: Rect, game: &Game) {
     if area.width < 40 || area.height < 15 {
-        draw_str(buf, 1, 1, "Terminal too small! Need 40×15+", Style::default().fg(Color::Red));
+        draw_str(
+            buf,
+            1,
+            1,
+            "Terminal too small! Need 40×15+",
+            Style::default().fg(Color::Red),
+        );
         return;
     }
 
-    // Layout: track in center, HUD on sides
     let vanish_y = area.y as f64 + 2.0;
     let hit_y = (area.y + area.height) as f64 - 4.0;
     let center_x = area.width as f64 / 2.0;
     let max_half_width = (area.width as f64 * 0.38).min(40.0);
+    let num_lanes = game.num_lanes();
 
     // Handle countdown
     if let Some(cd) = game.countdown {
@@ -213,32 +303,22 @@ fn render_gameplay(buf: &mut Buffer, area: Rect, game: &Game) {
         return;
     }
 
-    // ── Draw track background ───────────────────────────────────────────
     draw_track_background(buf, area, vanish_y, hit_y, center_x, max_half_width);
-
-    // ── Draw lane dividers ──────────────────────────────────────────────
-    draw_lane_dividers(buf, area, vanish_y, hit_y, center_x, max_half_width);
-
-    // ── Draw scrolling grid lines (depth markers) ───────────────────────
+    draw_lane_dividers(buf, area, vanish_y, hit_y, center_x, max_half_width, num_lanes);
     draw_depth_grid(buf, area, vanish_y, hit_y, center_x, max_half_width, game.game_time);
-
-    // ── Draw notes ──────────────────────────────────────────────────────
     draw_notes(buf, area, vanish_y, hit_y, center_x, max_half_width, game);
-
-    // ── Draw hit zone ───────────────────────────────────────────────────
     draw_hit_zone(buf, area, vanish_y, hit_y, center_x, max_half_width, game);
 
-    // ── Draw next-key indicators below hit zone ─────────────────────────
+    // ── Next-key indicators below hit zone ─────────────────────────────
     let label_y = (hit_y + 2.0) as u16;
     if label_y < area.y + area.height {
         let hw = max_half_width;
-        let lane_w = (2.0 * hw) / NUM_LANES as f64;
-        for lane in 0..NUM_LANES {
+        let lane_w = (2.0 * hw) / num_lanes as f64;
+        for lane in 0..num_lanes {
             let lane_center = center_x - hw + lane_w * (lane as f64 + 0.5);
             let x = lane_center as u16;
-            let (r, g, b) = LANE_COLORS[lane];
+            let (r, g, b) = game.lane_color(lane);
 
-            // Flash effect on keypress
             let flash = game.lane_flash[lane]
                 .map(|t| {
                     let elapsed = t.elapsed().as_secs_f64();
@@ -251,17 +331,20 @@ fn render_gameplay(buf: &mut Buffer, area: Rect, game: &Game) {
             let bb = ((b as f64 + (255.0 - b as f64) * flash) as u8).min(255);
 
             if x > 0 && x < area.width - 1 {
-                let next_key = game.next_key_for_lane(lane)
-                    .map(|k| k.to_ascii_uppercase())
-                    .unwrap_or('·');
-                let label = format!("[{}]", next_key);
+                let key_char = game.display_key_for_lane(lane).to_ascii_uppercase();
+                let label = format!("[{}]", key_char);
                 let lx = x.saturating_sub(1);
-                draw_str(buf, lx, label_y, &label, Style::default().fg(Color::Rgb(br, bg_c, bb)));
+                draw_str(
+                    buf,
+                    lx,
+                    label_y,
+                    &label,
+                    Style::default().fg(Color::Rgb(br, bg_c, bb)),
+                );
             }
         }
     }
 
-    // ── Draw HUD ────────────────────────────────────────────────────────
     draw_hud(buf, area, game);
 }
 
@@ -286,7 +369,9 @@ fn draw_track_background(
         let bg_color = Color::Rgb(depth_shade, depth_shade, depth_shade + 6);
 
         for col in left..=right {
-            if let Some(c) = buf.cell_mut((col, row)) { c.set_char(' ').set_bg(bg_color); }
+            if let Some(c) = buf.cell_mut((col, row)) {
+                c.set_char(' ').set_bg(bg_color);
+            }
         }
     }
 }
@@ -298,6 +383,7 @@ fn draw_lane_dividers(
     hit_y: f64,
     center_x: f64,
     max_hw: f64,
+    num_lanes: usize,
 ) {
     let y_start = vanish_y.max(area.y as f64) as u16;
     let y_end = hit_y.min((area.y + area.height - 1) as f64) as u16;
@@ -306,8 +392,8 @@ fn draw_lane_dividers(
         let z = screen_y_to_z(row as f64, vanish_y, hit_y);
         let hw = max_hw * z;
 
-        for i in 0..=NUM_LANES {
-            let x = center_x - hw + (2.0 * hw * i as f64 / NUM_LANES as f64);
+        for i in 0..=num_lanes {
+            let x = center_x - hw + (2.0 * hw * i as f64 / num_lanes as f64);
             let col = x as u16;
             if col >= area.x && col < area.x + area.width {
                 let brightness = (z * 55.0) as u8 + 25;
@@ -330,7 +416,6 @@ fn draw_depth_grid(
     max_hw: f64,
     game_time: f64,
 ) {
-    // Scrolling horizontal grid lines for depth perception
     let num_grid_lines = 12;
     let scroll_offset = (game_time * 0.4) % 1.0;
 
@@ -373,6 +458,7 @@ fn draw_notes(
     game: &Game,
 ) {
     let note_z_thickness = 0.035;
+    let num_lanes = game.num_lanes();
 
     for note in &game.notes {
         if !note.active {
@@ -384,7 +470,6 @@ fn draw_notes(
             continue;
         }
 
-        // Note vertical extent
         let z_front = z.min(1.05);
         let z_back = (z - note_z_thickness).max(0.0);
 
@@ -394,17 +479,16 @@ fn draw_notes(
         let row_top = (y_back as u16).max(area.y);
         let row_bot = (y_front as u16).min(area.y + area.height - 1);
 
-        let (base_r, base_g, base_b) = LANE_COLORS[note.lane];
+        let (base_r, base_g, base_b) = game.lane_color(note.lane);
 
         for row in row_top..=row_bot {
             let z_at_row = screen_y_to_z(row as f64, vanish_y, hit_y);
             let hw = max_hw * z_at_row;
 
-            let lane_w = (2.0 * hw) / NUM_LANES as f64;
+            let lane_w = (2.0 * hw) / num_lanes as f64;
             let lane_left = center_x - hw + lane_w * note.lane as f64;
             let lane_right = lane_left + lane_w;
 
-            // Padding inside lane
             let pad = (lane_w * 0.12).max(0.3);
             let note_left = ((lane_left + pad).max(area.x as f64)) as u16;
             let note_right = ((lane_right - pad).min((area.x + area.width - 1) as f64)) as u16;
@@ -413,10 +497,7 @@ fn draw_notes(
                 continue;
             }
 
-            // Depth-based brightness: far = dim, close = bright
             let brightness = (z_at_row * 0.65 + 0.35).min(1.0);
-
-            // Glow effect when close to hit zone
             let glow = if z_at_row > 0.85 {
                 (z_at_row - 0.85) / 0.15
             } else {
@@ -427,14 +508,11 @@ fn draw_notes(
             let g = ((base_g as f64 * brightness) + (255.0 - base_g as f64) * glow * 0.3) as u8;
             let b = ((base_b as f64 * brightness) + (255.0 - base_b as f64) * glow * 0.3) as u8;
 
-            // Use different block chars for edges vs center for a 3D bevel effect
             for col in note_left..=note_right {
                 let is_edge_row = row == row_top || row == row_bot;
                 let is_edge_col = col == note_left || col == note_right;
 
                 let ch = if is_edge_row || is_edge_col { '▓' } else { '█' };
-
-                // Darken edges for bevel
                 let edge_dim = if is_edge_row || is_edge_col { 0.75 } else { 1.0 };
                 let er = (r as f64 * edge_dim) as u8;
                 let eg = (g as f64 * edge_dim) as u8;
@@ -453,15 +531,16 @@ fn draw_notes(
             let row_mid = (row_top + row_bot) / 2;
             let z_mid = screen_y_to_z(row_mid as f64, vanish_y, hit_y);
             let hw_mid = max_hw * z_mid;
-            let lane_w_mid = (2.0 * hw_mid) / NUM_LANES as f64;
+            let lane_w_mid = (2.0 * hw_mid) / num_lanes as f64;
             let lane_left_mid = center_x - hw_mid + lane_w_mid * note.lane as f64;
             let col_mid = (lane_left_mid + lane_w_mid / 2.0) as u16;
 
-            if col_mid >= area.x && col_mid < area.x + area.width
-                && row_mid >= area.y && row_mid < area.y + area.height
+            if col_mid >= area.x
+                && col_mid < area.x + area.width
+                && row_mid >= area.y
+                && row_mid < area.y + area.height
             {
                 let key_char = note.key.to_ascii_uppercase();
-                // Brightness scales with z so distant letters are dimmer
                 let dim = ((z * 0.7 + 0.3) * 255.0) as u8;
                 if let Some(c) = buf.cell_mut((col_mid, row_mid)) {
                     c.set_char(key_char)
@@ -499,21 +578,17 @@ fn draw_hit_zone(
         }
     }
 
-    // Per-lane hit targets
-    let lane_w = (2.0 * max_hw) / NUM_LANES as f64;
-    for lane in 0..NUM_LANES {
-        let lane_center = center_x - max_hw + lane_w * (lane as f64 + 0.5);
-        let (r, g, b) = LANE_COLORS[lane];
+    let num_lanes = game.num_lanes();
+    let lane_w = (2.0 * max_hw) / num_lanes as f64;
 
-        // Flash brightness when key is pressed
+    for lane in 0..num_lanes {
+        let lane_center = center_x - max_hw + lane_w * (lane as f64 + 0.5);
+        let (r, g, b) = game.lane_color(lane);
+
         let flash = game.lane_flash[lane]
             .map(|t| {
                 let elapsed = t.elapsed().as_secs_f64();
-                if elapsed < 0.12 {
-                    1.0 - elapsed / 0.12
-                } else {
-                    0.0
-                }
+                if elapsed < 0.12 { 1.0 - elapsed / 0.12 } else { 0.0 }
             })
             .unwrap_or(0.0);
 
@@ -523,9 +598,10 @@ fn draw_hit_zone(
         let cg = (g as f64 * bright) as u8;
         let cb = (b as f64 * bright) as u8;
 
-        // Draw target zone: a highlighted section on the hit line for this lane
-        let target_left = (center_x - max_hw + lane_w * lane as f64 + lane_w * 0.15) as u16;
-        let target_right = (center_x - max_hw + lane_w * (lane as f64 + 1.0) - lane_w * 0.15) as u16;
+        let target_left =
+            (center_x - max_hw + lane_w * lane as f64 + lane_w * 0.15) as u16;
+        let target_right =
+            (center_x - max_hw + lane_w * (lane as f64 + 1.0) - lane_w * 0.15) as u16;
 
         for col in target_left..=target_right {
             if col >= area.x && col < area.x + area.width {
@@ -537,21 +613,23 @@ fn draw_hit_zone(
             }
         }
 
-        // Show next incoming key for this lane centered on the target
-        if let Some(next_key) = game.next_key_for_lane(lane) {
-            let key_col = lane_center as u16;
-            if key_col >= area.x && key_col < area.x + area.width {
-                let key_char = next_key.to_ascii_uppercase();
-                let (kr, kg, kb) = if flash > 0.0 {
-                    (255u8, 255u8, 255u8)
-                } else {
-                    (cr.saturating_add(60), cg.saturating_add(60), cb.saturating_add(60))
-                };
-                if let Some(c) = buf.cell_mut((key_col, row)) {
-                    c.set_char(key_char)
-                        .set_fg(Color::Rgb(kr, kg, kb))
-                        .set_bg(Color::Rgb(cr / 8, cg / 8, cb / 8));
-                }
+        // Show key for this lane centered on the target
+        let key_col = lane_center as u16;
+        if key_col >= area.x && key_col < area.x + area.width {
+            let key_char = game.display_key_for_lane(lane).to_ascii_uppercase();
+            let (kr, kg, kb) = if flash > 0.0 {
+                (255u8, 255u8, 255u8)
+            } else {
+                (
+                    cr.saturating_add(60),
+                    cg.saturating_add(60),
+                    cb.saturating_add(60),
+                )
+            };
+            if let Some(c) = buf.cell_mut((key_col, row)) {
+                c.set_char(key_char)
+                    .set_fg(Color::Rgb(kr, kg, kb))
+                    .set_bg(Color::Rgb(cr / 8, cg / 8, cb / 8));
             }
         }
 
@@ -587,26 +665,48 @@ fn draw_hit_zone(
 fn draw_hud(buf: &mut Buffer, area: Rect, game: &Game) {
     let right_col = area.width.saturating_sub(20);
 
+    // Difficulty indicator
+    let (dr, dg, db) = game.difficulty.color();
+    draw_str(
+        buf,
+        right_col,
+        0,
+        game.difficulty.label(),
+        Style::default().fg(Color::Rgb(dr, dg, db)),
+    );
+
     // Score
     let score_str = format!("SCORE {:>8}", game.score);
-    draw_str(buf, right_col, 1, &score_str, Style::default().fg(Color::White));
+    draw_str(
+        buf,
+        right_col,
+        1,
+        &score_str,
+        Style::default().fg(Color::White),
+    );
 
     // Combo
     if game.combo > 1 {
         let combo_str = format!("{}x COMBO", game.combo);
         let combo_color = if game.combo >= 50 {
-            Color::Rgb(255, 200, 50) // Gold
+            Color::Rgb(255, 200, 50)
         } else if game.combo >= 20 {
-            Color::Rgb(200, 120, 255) // Purple
+            Color::Rgb(200, 120, 255)
         } else {
-            Color::Rgb(120, 200, 255) // Blue
+            Color::Rgb(120, 200, 255)
         };
         draw_str(buf, right_col, 2, &combo_str, Style::default().fg(combo_color));
     }
 
     // Accuracy
     let acc_str = format!("{:.1}%", game.accuracy());
-    draw_str(buf, right_col, 3, &acc_str, Style::default().fg(Color::Rgb(180, 180, 200)));
+    draw_str(
+        buf,
+        right_col,
+        3,
+        &acc_str,
+        Style::default().fg(Color::Rgb(180, 180, 200)),
+    );
 
     // Hit grade feedback
     if let Some((grade, instant)) = &game.last_hit {
@@ -638,7 +738,13 @@ fn draw_hud(buf: &mut Buffer, area: Rect, game: &Game) {
     let bar_x = 2u16;
     let bar_y_start = 2u16;
 
-    draw_str(buf, bar_x, bar_y_start.saturating_sub(1), "♪", Style::default().fg(Color::Rgb(100, 80, 140)));
+    draw_str(
+        buf,
+        bar_x,
+        bar_y_start.saturating_sub(1),
+        "♪",
+        Style::default().fg(Color::Rgb(100, 80, 140)),
+    );
 
     for i in 0..bar_height {
         let y = bar_y_start + i;
@@ -658,7 +764,13 @@ fn draw_hud(buf: &mut Buffer, area: Rect, game: &Game) {
     // Song name at top
     let song = &game.songs[game.selected_song];
     let song_name = format!("♫ {} - {}", song.name, song.artist);
-    draw_str(buf, 5, 0, &song_name, Style::default().fg(Color::Rgb(140, 120, 180)));
+    draw_str(
+        buf,
+        5,
+        0,
+        &song_name,
+        Style::default().fg(Color::Rgb(140, 120, 180)),
+    );
 }
 
 // ── Results Screen ──────────────────────────────────────────────────────────
@@ -688,6 +800,19 @@ fn render_results(buf: &mut Buffer, area: Rect, game: &Game) {
         Style::default().fg(Color::Rgb(180, 160, 220)),
     );
 
+    y += 1;
+
+    // Difficulty badge
+    let (dr, dg, db) = game.difficulty.color();
+    let diff_badge = format!("[{}]", game.difficulty.label());
+    draw_str(
+        buf,
+        cx.saturating_sub(diff_badge.len() as u16 / 2),
+        y,
+        &diff_badge,
+        Style::default().fg(Color::Rgb(dr, dg, db)),
+    );
+
     y += 3;
 
     // Grade
@@ -713,13 +838,31 @@ fn render_results(buf: &mut Buffer, area: Rect, game: &Game) {
     let x = cx.saturating_sub(18);
     let lines = [
         (format!("Score       {:>8}", game.score), Color::White),
-        (format!("Max Combo   {:>8}x", game.max_combo), Color::Rgb(200, 180, 255)),
-        (format!("Accuracy    {:>7.1}%", game.accuracy()), Color::Rgb(180, 220, 255)),
+        (
+            format!("Max Combo   {:>8}x", game.max_combo),
+            Color::Rgb(200, 180, 255),
+        ),
+        (
+            format!("Accuracy    {:>7.1}%", game.accuracy()),
+            Color::Rgb(180, 220, 255),
+        ),
         (String::new(), Color::Black),
-        (format!("Perfect     {:>8}", game.hit_counts[0]), Color::Rgb(255, 255, 80)),
-        (format!("Great       {:>8}", game.hit_counts[1]), Color::Rgb(80, 255, 120)),
-        (format!("Good        {:>8}", game.hit_counts[2]), Color::Rgb(80, 180, 255)),
-        (format!("Miss        {:>8}", game.hit_counts[3]), Color::Rgb(255, 60, 60)),
+        (
+            format!("Perfect     {:>8}", game.hit_counts[0]),
+            Color::Rgb(255, 255, 80),
+        ),
+        (
+            format!("Great       {:>8}", game.hit_counts[1]),
+            Color::Rgb(80, 255, 120),
+        ),
+        (
+            format!("Good        {:>8}", game.hit_counts[2]),
+            Color::Rgb(80, 180, 255),
+        ),
+        (
+            format!("Miss        {:>8}", game.hit_counts[3]),
+            Color::Rgb(255, 60, 60),
+        ),
     ];
 
     for (line, color) in &lines {
@@ -748,7 +891,9 @@ fn draw_str(buf: &mut Buffer, x: u16, y: u16, text: &str, style: Style) {
         if col >= buf.area().width || y >= buf.area().height {
             break;
         }
-        if let Some(c) = buf.cell_mut((col, y)) { c.set_char(ch).set_style(style); }
+        if let Some(c) = buf.cell_mut((col, y)) {
+            c.set_char(ch).set_style(style);
+        }
         col += 1;
     }
 }
