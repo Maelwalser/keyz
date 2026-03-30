@@ -1,0 +1,20 @@
+[package]
+name = "rhythm-keys"
+version = "0.1.0"
+edition = "2021"
+description = "A 3D terminal rhythm game — notes fly towards you in perspective, hit them with piano-style key presses"
+license = "MIT"
+readme = "README.md"
+keywords = ["game", "rhythm", "terminal", "tui", "music"]
+categories = ["games", "command-line-utilities"]
+
+rust-version = "1.80"
+
+[dependencies]
+crossterm = "0.28"
+ratatui = "0.29"
+rand = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
