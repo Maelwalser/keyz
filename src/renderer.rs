@@ -36,6 +36,8 @@ pub fn render(frame: &mut Frame, game: &Game) {
         GamePhase::Title => render_title(frame.buffer_mut(), area),
         GamePhase::DifficultySelect => render_difficulty_select(frame.buffer_mut(), area, game),
         GamePhase::SongSelect => render_song_select(frame.buffer_mut(), area, game),
+        GamePhase::UrlInput => render_url_input(frame.buffer_mut(), area, game),
+        GamePhase::Processing => render_processing(frame.buffer_mut(), area, game),
         GamePhase::Playing => render_gameplay(frame.buffer_mut(), area, game),
         GamePhase::Results => render_results(frame.buffer_mut(), area, game),
         GamePhase::Quit => {}
@@ -251,11 +253,141 @@ fn render_song_select(buf: &mut Buffer, area: Rect, game: &Game) {
         }
     }
 
+    // Virtual "Add from YouTube" entry at index songs.len()
+    let yt_index = game.songs.len();
+    let yt_y = start_y + 2 + yt_index as u16 * 3;
+    if yt_y + 1 < area.height {
+        let yt_selected = game.selected_song == yt_index;
+        let arrow = if yt_selected { "▸ " } else { "  " };
+        let (r, g, b) = if yt_selected { (255, 80, 80) } else { (100, 40, 40) };
+        let x = cx.saturating_sub(25);
+        draw_str(
+            buf,
+            x,
+            yt_y,
+            &format!("{}+ Add from YouTube\u{2026}", arrow),
+            Style::default().fg(Color::Rgb(r, g, b)),
+        );
+        if yt_selected {
+            for col in x.saturating_sub(1)..=(x + 55).min(area.width - 1) {
+                if let Some(cell) = buf.cell_mut((col, yt_y)) {
+                    cell.set_bg(Color::Rgb(30, 15, 15));
+                }
+            }
+        }
+    }
+
     let hint = "↑/↓ Navigate   ENTER Play   Esc Back   Q Quit";
     draw_str(
         buf,
         cx.saturating_sub(hint.len() as u16 / 2),
         area.height.saturating_sub(2),
+        hint,
+        Style::default().fg(Color::Rgb(100, 100, 120)),
+    );
+}
+
+// ── URL Input ───────────────────────────────────────────────────────────────
+
+fn render_url_input(buf: &mut Buffer, area: Rect, game: &Game) {
+    let cx = area.width / 2;
+    let cy = area.height / 2;
+
+    let header = "\u{2500}\u{2500} ADD FROM YOUTUBE \u{2500}\u{2500}";
+    draw_str(
+        buf,
+        cx.saturating_sub(header.len() as u16 / 2),
+        cy.saturating_sub(3),
+        header,
+        Style::default().fg(Color::Rgb(255, 80, 80)),
+    );
+
+    let prompt = "URL: ";
+    let px = cx.saturating_sub(30);
+    draw_str(buf, px, cy, prompt, Style::default().fg(Color::Rgb(180, 180, 200)));
+
+    // Input text with cursor
+    let input = &game.url_input;
+    let before_cursor = &input[..game.url_cursor];
+    let after_cursor = &input[game.url_cursor..];
+    let text_x = px + prompt.len() as u16;
+
+    draw_str(buf, text_x, cy, before_cursor, Style::default().fg(Color::Rgb(255, 255, 255)));
+
+    // Cursor character (blinking)
+    let blink = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        / 500)
+        % 2
+        == 0;
+    let cursor_x = text_x + before_cursor.chars().count() as u16;
+    if blink {
+        draw_str(buf, cursor_x, cy, "\u{2588}", Style::default().fg(Color::Rgb(255, 200, 80)));
+    }
+    draw_str(
+        buf,
+        cursor_x + 1,
+        cy,
+        after_cursor,
+        Style::default().fg(Color::Rgb(255, 255, 255)),
+    );
+
+    let hint = "ENTER Confirm   Esc Cancel";
+    draw_str(
+        buf,
+        cx.saturating_sub(hint.len() as u16 / 2),
+        cy + 3,
+        hint,
+        Style::default().fg(Color::Rgb(100, 100, 120)),
+    );
+}
+
+// ── Processing ──────────────────────────────────────────────────────────────
+
+fn render_processing(buf: &mut Buffer, area: Rect, game: &Game) {
+    let cx = area.width / 2;
+    let cy = area.height / 2;
+
+    const SPINNER: [char; 8] = ['\u{280b}', '\u{2819}', '\u{2839}', '\u{2838}',
+                                 '\u{283c}', '\u{2834}', '\u{2826}', '\u{2827}'];
+    let spinner_char = SPINNER[(game.processing_spinner_frame / 8) as usize % 8];
+
+    let header = "\u{2500}\u{2500} IMPORTING SONG \u{2500}\u{2500}";
+    draw_str(
+        buf,
+        cx.saturating_sub(header.len() as u16 / 2),
+        cy.saturating_sub(3),
+        header,
+        Style::default().fg(Color::Rgb(255, 180, 50)),
+    );
+
+    let spin_line = format!("{}  Working\u{2026}", spinner_char);
+    draw_str(
+        buf,
+        cx.saturating_sub(spin_line.len() as u16 / 2),
+        cy,
+        &spin_line,
+        Style::default().fg(Color::Rgb(255, 220, 80)),
+    );
+
+    let status = &game.processing_status;
+    if !status.is_empty() {
+        draw_str(
+            buf,
+            cx.saturating_sub((status.len() as u16).min(cx) / 2),
+            cy + 2,
+            status,
+            Style::default().fg(Color::Rgb(180, 180, 200)),
+        );
+    }
+
+    let hint = "Esc Cancel";
+    draw_str(
+        buf,
+        cx.saturating_sub(hint.len() as u16 / 2),
+        cy + 5,
         hint,
         Style::default().fg(Color::Rgb(100, 100, 120)),
     );
@@ -465,11 +597,102 @@ fn draw_notes(
             continue;
         }
 
+        let (base_r, base_g, base_b) = game.lane_color(note.lane);
+
+        // ── Active hold: draw shrinking progress bar at the hit zone ──────
+        if note.is_holding {
+            let progress = note.hold_progress(game.game_time);
+            let remaining = 1.0 - progress;
+            // tail end z-position: starts below 1.0 and rises toward 1.0 as hold completes
+            let tail_z = 1.0 - remaining * note.hold_secs / APPROACH_TIME;
+            let tail_z = tail_z.clamp(0.0, 1.0);
+
+            let y_tail = z_to_screen_y(tail_z, vanish_y, hit_y);
+            let y_head = hit_y; // head is at the hit zone
+
+            let row_top = (y_tail as u16).max(area.y);
+            let row_bot = (y_head as u16).min(area.y + area.height - 1);
+
+            // Pulse effect while holding
+            let pulse = (game.game_time * 8.0).sin() * 0.15 + 0.85;
+
+            for row in row_top..=row_bot {
+                let z_at_row = screen_y_to_z(row as f64, vanish_y, hit_y);
+                let hw = max_hw * z_at_row;
+                let lane_w = (2.0 * hw) / num_lanes as f64;
+                let lane_left = center_x - hw + lane_w * note.lane as f64;
+                let lane_right = lane_left + lane_w;
+                let pad = (lane_w * 0.15).max(0.5);
+                let left = ((lane_left + pad).max(area.x as f64)) as u16;
+                let right = ((lane_right - pad).min((area.x + area.width - 1) as f64)) as u16;
+                if left >= right { continue; }
+
+                // Filled bar: blend from lane color → white as hold nears completion
+                let fill_t = progress as f64;
+                let r = (base_r as f64 * (1.0 - fill_t * 0.4) * pulse) as u8;
+                let g = (base_g as f64 * (1.0 - fill_t * 0.4) * pulse + 80.0 * fill_t) as u8;
+                let b = (base_b as f64 * (1.0 - fill_t * 0.4) * pulse) as u8;
+
+                let is_edge = row == row_top || row == row_bot;
+                let ch = if is_edge { '▓' } else { '█' };
+                for col in left..=right {
+                    if let Some(c) = buf.cell_mut((col, row)) {
+                        c.set_char(ch)
+                            .set_fg(Color::Rgb(r, g, b))
+                            .set_bg(Color::Rgb(r / 6, g / 6, b / 6));
+                    }
+                }
+            }
+            continue;
+        }
+
         let z = note.z_position(game.game_time);
         if z < -0.05 || z > 1.15 {
             continue;
         }
 
+        // ── Hold note body/trail (approaching) ────────────────────────────
+        if note.hold_secs > 0.0 {
+            let tail_z = (z - note.hold_secs / APPROACH_TIME).max(0.0);
+            let body_z_end = (z - note_z_thickness).max(0.0); // just before the head
+
+            if tail_z < body_z_end {
+                let y_tail = z_to_screen_y(tail_z, vanish_y, hit_y);
+                let y_body_end = z_to_screen_y(body_z_end, vanish_y, hit_y);
+                let row_top = (y_tail as u16).max(area.y);
+                let row_bot = (y_body_end as u16).min(area.y + area.height - 1);
+
+                for row in row_top..=row_bot {
+                    let z_at_row = screen_y_to_z(row as f64, vanish_y, hit_y);
+                    let hw = max_hw * z_at_row;
+                    let lane_w = (2.0 * hw) / num_lanes as f64;
+                    let lane_left = center_x - hw + lane_w * note.lane as f64;
+                    let lane_right = lane_left + lane_w;
+                    // Narrower than the head (inner 60%)
+                    let pad = lane_w * 0.22;
+                    let left = ((lane_left + pad).max(area.x as f64)) as u16;
+                    let right = ((lane_right - pad).min((area.x + area.width - 1) as f64)) as u16;
+                    if left > right { continue; }
+
+                    let depth = (z_at_row * 0.55 + 0.25).min(1.0);
+                    let r = (base_r as f64 * depth * 0.7) as u8;
+                    let g = (base_g as f64 * depth * 0.7) as u8;
+                    let b = (base_b as f64 * depth * 0.7) as u8;
+
+                    for col in left..=right {
+                        if let Some(c) = buf.cell_mut((col, row)) {
+                            if c.symbol() == " " || c.symbol() == "·" {
+                                c.set_char('▒')
+                                    .set_fg(Color::Rgb(r, g, b))
+                                    .set_bg(Color::Rgb(r / 8, g / 8, b / 8));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Note head ─────────────────────────────────────────────────────
         let z_front = z.min(1.05);
         let z_back = (z - note_z_thickness).max(0.0);
 
@@ -478,8 +701,6 @@ fn draw_notes(
 
         let row_top = (y_back as u16).max(area.y);
         let row_bot = (y_front as u16).min(area.y + area.height - 1);
-
-        let (base_r, base_g, base_b) = game.lane_color(note.lane);
 
         for row in row_top..=row_bot {
             let z_at_row = screen_y_to_z(row as f64, vanish_y, hit_y);
@@ -498,11 +719,7 @@ fn draw_notes(
             }
 
             let brightness = (z_at_row * 0.65 + 0.35).min(1.0);
-            let glow = if z_at_row > 0.85 {
-                (z_at_row - 0.85) / 0.15
-            } else {
-                0.0
-            };
+            let glow = if z_at_row > 0.85 { (z_at_row - 0.85) / 0.15 } else { 0.0 };
 
             let r = ((base_r as f64 * brightness) + (255.0 - base_r as f64) * glow * 0.3) as u8;
             let g = ((base_g as f64 * brightness) + (255.0 - base_g as f64) * glow * 0.3) as u8;
@@ -512,7 +729,14 @@ fn draw_notes(
                 let is_edge_row = row == row_top || row == row_bot;
                 let is_edge_col = col == note_left || col == note_right;
 
-                let ch = if is_edge_row || is_edge_col { '▓' } else { '█' };
+                // Hold note heads get a diamond marker on the leading edge
+                let ch = if note.hold_secs > 0.0 && row == row_bot {
+                    '◆'
+                } else if is_edge_row || is_edge_col {
+                    '▓'
+                } else {
+                    '█'
+                };
                 let edge_dim = if is_edge_row || is_edge_col { 0.75 } else { 1.0 };
                 let er = (r as f64 * edge_dim) as u8;
                 let eg = (g as f64 * edge_dim) as u8;
@@ -526,7 +750,7 @@ fn draw_notes(
             }
         }
 
-        // Draw the key letter on the note center (only when close enough to be readable)
+        // Draw key letter on the note head (only when close enough to be readable)
         if z > 0.25 {
             let row_mid = (row_top + row_bot) / 2;
             let z_mid = screen_y_to_z(row_mid as f64, vanish_y, hit_y);

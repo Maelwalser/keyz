@@ -68,6 +68,8 @@ fn first_steps() -> Song {
         bpm: 110.0,
         chart,
         total_beats: 74.0,
+        audio_path: None,
+        hold_durations: vec![],
     }
 }
 
@@ -137,6 +139,8 @@ fn neon_cascade() -> Song {
         bpm: 138.0,
         chart,
         total_beats: 66.0,
+        audio_path: None,
+        hold_durations: vec![],
     }
 }
 
@@ -236,5 +240,7 @@ fn stardust() -> Song {
         bpm: 160.0,
         chart,
         total_beats: 74.0,
+        audio_path: None,
+        hold_durations: vec![],
     }
 }
