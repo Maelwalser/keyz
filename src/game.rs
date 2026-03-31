@@ -1,6 +1,7 @@
 use crossterm::event::KeyCode;
 use rand::Rng;
-use std::time::Instant;
+use rodio::{source::Source, OutputStreamHandle, Sink};
+use std::time::{Duration, Instant};
 
 // ── Lane Configuration ──────────────────────────────────────────────────────
 
@@ -198,10 +199,13 @@ pub struct Game {
     // Visual feedback
     pub last_hit: Option<(HitGrade, Instant)>,
     pub lane_flash: [Option<Instant>; MAX_LANES],
+
+    // Audio
+    pub audio_handle: Option<OutputStreamHandle>,
 }
 
 impl Game {
-    pub fn new() -> Self {
+    pub fn new(audio_handle: Option<OutputStreamHandle>) -> Self {
         let songs = crate::songs::builtin_songs();
         Game {
             phase: GamePhase::Title,
@@ -221,6 +225,32 @@ impl Game {
             hit_counts: [0; 4],
             last_hit: None,
             lane_flash: [None; MAX_LANES],
+            audio_handle,
+        }
+    }
+
+    fn play_key_sound(&self, key: char) {
+        if let Some(audio) = &self.audio_handle {
+            let freq = if let Some(idx) = STANDARD_KEYS.iter().position(|&k| k == key) {
+                // Map the 8 standard keys to a C-Major scale
+                const C_MAJOR: [f32; 8] =
+                    [261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25];
+                C_MAJOR[idx]
+            } else if key.is_ascii_alphabetic() {
+                // Hardcore mode: map a–z to semitones starting from A3 (220 Hz)
+                let offset = (key.to_ascii_lowercase() as u8).saturating_sub(b'a') as f32;
+                220.0 * 2.0_f32.powf(offset / 12.0)
+            } else {
+                return;
+            };
+
+            if let Ok(sink) = Sink::try_new(audio) {
+                let source = rodio::source::SineWave::new(freq)
+                    .take_duration(Duration::from_millis(150))
+                    .amplify(0.2);
+                sink.append(source);
+                sink.detach();
+            }
         }
     }
 
@@ -390,6 +420,7 @@ impl Game {
                     return;
                 }
                 if let KeyCode::Char(ch) = key {
+                    self.play_key_sound(ch);
                     self.try_hit(ch);
                 }
             }

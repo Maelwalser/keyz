@@ -2,6 +2,8 @@ mod game;
 mod renderer;
 mod songs;
 
+use rodio::OutputStream;
+
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
@@ -39,7 +41,11 @@ fn main() -> io::Result<()> {
 }
 
 fn run_game(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
-    let mut game = Game::new();
+    let (_stream, stream_handle) = OutputStream::try_default()
+        .map(|(s, h)| (Some(s), Some(h)))
+        .unwrap_or((None, None));
+
+    let mut game = Game::new(stream_handle);
     let frame_duration = Duration::from_micros(1_000_000 / TARGET_FPS);
 
     loop {

@@ -1,4 +1,4 @@
-# 🎹 Rhythm Keys
+# 🎹 Keyz
 
 A **3D terminal rhythm game** where notes fly towards you in perspective — hit them with piano-style key presses as they reach the strike zone.
 
@@ -88,6 +88,3 @@ The track uses **vanishing-point perspective projection**:
 - **Bevel shading** on note edges (█ center, ▓ edges) creates a 3D block look
 - **Lane flash effects** on keypress give satisfying visual feedback
 
-## License
-
-MIT
